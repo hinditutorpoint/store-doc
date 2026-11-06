@@ -1,5 +1,11 @@
 # Store-Doc Laravel Storage Driver
 
+[![Latest Version on Packagist](https://img.shields.io/packagist/v/store-doc/laravel-storage-driver.svg?style=flat-square)](https://packagist.org/packages/store-doc/laravel-storage-driver)
+[![Total Downloads](https://img.shields.io/packagist/dt/store-doc/laravel-storage-driver.svg?style=flat-square)](https://packagist.org/packages/store-doc/laravel-storage-driver)
+[![Software License](https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat-square)](LICENSE)
+[![PHP Version](https://img.shields.io/badge/PHP-%5E8.3-blue.svg?style=flat-square)](https://www.php.net/)
+[![Laravel Version](https://img.shields.io/badge/Laravel-11.x%20%7C%2012.x%20%7C%2013.x-red.svg?style=flat-square)](https://laravel.com/)
+
 A Laravel package that provides a custom filesystem driver for Store-Doc S3-compatible storage service. Use Laravel's Storage facade to interact with your Store-Doc storage seamlessly.
 
 ## Features
@@ -417,8 +423,9 @@ Ensure your API credentials are correct:
 
 MIT License
 
-## Support
+## Support & Contributing
 
-For issues and questions:
-- GitHub Issues: [https://github.com/store-doc/laravel-storage-driver](https://github.com/store-doc/laravel-storage-driver)
-- Email: support@store-doc.com
+- **GitHub Repository**: [https://github.com/hinditutorpoint/store-doc](https://github.com/hinditutorpoint/store-doc)
+- **Issues & Bug Reports**: [https://github.com/hinditutorpoint/store-doc/issues](https://github.com/hinditutorpoint/store-doc/issues)
+- **Packagist Package**: [https://packagist.org/packages/store-doc/laravel-storage-driver](https://packagist.org/packages/store-doc/laravel-storage-driver)
+- **Documentation**: [https://github.com/hinditutorpoint/store-doc#readme](https://github.com/hinditutorpoint/store-doc#readme)
