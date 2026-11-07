@@ -224,21 +224,25 @@ class StoreDocClient
      */
     protected function getAuthHeaders(string $method = '', string $uri = ''): array
     {
+        $headers = [
+            'Accept' => 'application/json',
+            'User-Agent' => 'StoreDoc-Laravel-Driver/1.0.3',
+            'X-StoreDoc-Client' => 'package',
+        ];
+
         if ($this->authMode === 'hmac') {
             $timestamp = (string) time();
             $signature = $this->generateHmacSignature($method, $uri, $timestamp);
 
-            return [
-                'Authorization' => "HMAC-SHA256 Credential={$this->accessKeyId}, Timestamp={$timestamp}, Signature={$signature}",
-                'Accept' => 'application/json',
-            ];
+            $headers['Authorization'] = "HMAC-SHA256 Credential={$this->accessKeyId}, Timestamp={$timestamp}, Signature={$signature}";
+
+            return $headers;
         }
 
         // Legacy basic mode
-        return [
-            'X-Api-Key' => "{$this->accessKeyId}:{$this->secretAccessKey}",
-            'Accept' => 'application/json',
-        ];
+        $headers['X-Api-Key'] = "{$this->accessKeyId}:{$this->secretAccessKey}";
+
+        return $headers;
     }
 
     /**
