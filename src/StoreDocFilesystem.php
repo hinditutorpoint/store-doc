@@ -46,7 +46,13 @@ class StoreDocFilesystem extends FilesystemAdapter
             throw new \RuntimeException('The requested file could not be found.');
         }
 
-        foreach ([$object['urls']['public'] ?? null, $object['urls']['cdn'] ?? null, $object['public_url'] ?? null] as $url) {
+        foreach ([
+            $object['urls']['public'] ?? null,
+            $object['urls']['cdn'] ?? null,
+            $object['public_url'] ?? null,
+            $object['urls']['preview'] ?? null,
+            $object['urls']['download'] ?? null,
+        ] as $url) {
             if (is_string($url) && $url !== '') {
                 return $this->client->validatePresignedUrl($url);
             }
