@@ -295,15 +295,38 @@ class StoreDocClient
             return $this->client->request($method, $uri, $options);
         } catch (GuzzleException $e) {
             $safeContext = ['exception' => get_class($e)];
+            $errorMessage = $e->getMessage();
+
             if ($e instanceof RequestException && $e->getResponse()) {
-                $safeContext['status'] = $e->getResponse()->getStatusCode();
+                $response = $e->getResponse();
+                $statusCode = $response->getStatusCode();
+                $safeContext['status'] = $statusCode;
+
+                try {
+                    $body = (string) $response->getBody();
+                    $data = json_decode($body, true);
+                    if (is_array($data)) {
+                        if (isset($data['error'])) {
+                            $safeContext['error'] = $data['error'];
+                        }
+                        if (isset($data['message'])) {
+                            $safeContext['message'] = $data['message'];
+                            $errorMessage = $data['message'];
+                        }
+                    } elseif (! empty($body)) {
+                        $safeContext['body'] = substr($this->redactCredentials($body), 0, 500);
+                    }
+                } catch (\Throwable) {
+                    // Ignore body parsing failures
+                }
             }
+
             $this->log("{$operation} failed", $safeContext, 'error');
 
             // [S-01] Redact credentials from the wrapped message
             throw new RuntimeException(
-                'Store-Doc '.$operation.' failed: '.$this->redactCredentials($e->getMessage()),
-                0,
+                'Store-Doc '.$operation.' failed: '.$this->redactCredentials($errorMessage),
+                $safeContext['status'] ?? 0,
                 $e
             );
         }
