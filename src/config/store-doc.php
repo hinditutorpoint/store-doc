@@ -67,8 +67,27 @@ return [
 
     'max_retries' => env('STORE_DOC_MAX_RETRIES', 3),
 
-    'max_temporary_url_minutes' => env('STORE_DOC_MAX_TEMPORARY_URL_MINUTES', 1440),
+    'temporary_url_minutes' => env('STORE_DOC_TEMPORARY_URL_MINUTES', 10080), // 7 days default
+
+    'max_temporary_url_minutes' => env('STORE_DOC_MAX_TEMPORARY_URL_MINUTES', 525600), // 1 year max
 
     'max_listing_pages' => env('STORE_DOC_MAX_LISTING_PAGES', 1000),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Package Caching Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Automatically caches object metadata and signed URLs to eliminate
+    | repeated HTTP requests. Smart TTL refreshes URLs before expiration.
+    |
+    */
+    'cache' => [
+        'enabled' => env('STORE_DOC_CACHE_ENABLED', true),
+        'store' => env('STORE_DOC_CACHE_STORE', null), // null uses default Laravel cache store
+        'prefix' => env('STORE_DOC_CACHE_PREFIX', 'storedoc'),
+        'object_ttl' => env('STORE_DOC_OBJECT_CACHE_TTL', 3600), // 1 hour for metadata
+        'url_safety_margin' => env('STORE_DOC_URL_SAFETY_MARGIN', 300), // 5 minutes before signature expires
+    ],
 
 ];

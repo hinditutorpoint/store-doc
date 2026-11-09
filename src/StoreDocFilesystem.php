@@ -17,6 +17,8 @@ class StoreDocFilesystem extends FilesystemAdapter
 
     protected StoreDocClient $client;
 
+    protected StoreDocCache $cache;
+
     /** [M-03] Maximum file size (bytes) for in-memory prepend/append operations. */
     protected const MAX_INLINE_SIZE = 50 * 1024 * 1024; // 50 MB
 
@@ -26,6 +28,15 @@ class StoreDocFilesystem extends FilesystemAdapter
 
         $this->storeDocAdapter = $adapter;
         $this->client = $adapter->getClient();
+        $this->cache = $adapter->getCache();
+    }
+
+    /**
+     * Get the underlying StoreDoc cache manager.
+     */
+    public function getCache(): StoreDocCache
+    {
+        return $this->cache;
     }
 
     /**
@@ -38,6 +49,11 @@ class StoreDocFilesystem extends FilesystemAdapter
     {
         if (isset($this->config['url'])) {
             return $this->concatPathToUrl($this->config['url'], $path);
+        }
+
+        $bucket = $this->config['bucket'] ?? '';
+        if ($cached = $this->cache->getUrl($bucket, $path, 'public')) {
+            return $cached;
         }
 
         $object = $this->storeDocAdapter->getObjectByPath($path);
@@ -54,11 +70,18 @@ class StoreDocFilesystem extends FilesystemAdapter
             $object['urls']['download'] ?? null,
         ] as $url) {
             if (is_string($url) && $url !== '') {
-                return $this->client->validatePresignedUrl($url);
+                $validated = $this->client->validatePresignedUrl($url);
+                $this->cache->putUrl($bucket, $path, 'public', $validated);
+
+                return $validated;
             }
         }
 
-        return $this->client->getTemporaryUrl($object['id'], now()->addHour());
+        $lifetimeMinutes = (int) ($this->config['temporary_url_minutes'] ?? 10080); // Default 7 days
+        $url = $this->client->getTemporaryUrl($object['id'], now()->addMinutes($lifetimeMinutes));
+        $this->cache->putUrl($bucket, $path, 'public', $url);
+
+        return $url;
     }
 
     /**
@@ -72,6 +95,16 @@ class StoreDocFilesystem extends FilesystemAdapter
      */
     public function temporaryUrl($path, $expiration, array $options = [])
     {
+        $bucket = $this->config['bucket'] ?? '';
+        $context = [
+            'exp' => $expiration instanceof \DateTimeInterface ? $expiration->getTimestamp() : (string) $expiration,
+            'opts' => $options,
+        ];
+
+        if ($cached = $this->cache->getUrl($bucket, $path, 'temporary', $context)) {
+            return $cached;
+        }
+
         $object = $this->storeDocAdapter->getObjectByPath($path);
 
         if (! $object || ! isset($object['id'])) {
@@ -79,7 +112,10 @@ class StoreDocFilesystem extends FilesystemAdapter
             throw new \RuntimeException('The requested file could not be found.');
         }
 
-        return $this->client->getTemporaryUrl($object['id'], $expiration, $options);
+        $url = $this->client->getTemporaryUrl($object['id'], $expiration, $options);
+        $this->cache->putUrl($bucket, $path, 'temporary', $url, $context);
+
+        return $url;
     }
 
     /**
@@ -208,13 +244,28 @@ class StoreDocFilesystem extends FilesystemAdapter
      * Get a preview URL for the file (inline display).
      *
      * @param  string  $path
+     * @param  \DateTimeInterface|int|string|null  $expiration
      * @param  string|null  $filename
      * @return string
      *
      * @throws \RuntimeException
      */
-    public function previewUrl($path, $filename = null)
+    public function previewUrl($path, $expiration = null, $filename = null)
     {
+        // Backward-compatibility: if 2nd param is filename string
+        if (is_string($expiration) && $filename === null && ! is_numeric($expiration) && ! strtotime($expiration)) {
+            $filename = $expiration;
+            $expiration = null;
+        }
+
+        $expiresInMinutes = $this->parseExpirationMinutes($expiration);
+        $bucket = $this->config['bucket'] ?? '';
+        $context = ['expires_in' => $expiresInMinutes, 'filename' => $filename];
+
+        if ($cached = $this->cache->getUrl($bucket, $path, 'preview', $context)) {
+            return $cached;
+        }
+
         $object = $this->storeDocAdapter->getObjectByPath($path);
 
         if (! $object || ! isset($object['id'])) {
@@ -224,21 +275,39 @@ class StoreDocFilesystem extends FilesystemAdapter
 
         // Use original name if not provided
         $name = $filename ?? ($object['original_name'] ?? basename($path));
+        $url = $this->client->getDownloadUrl($object['id'], $name, true, $expiresInMinutes);
 
-        return $this->client->getDownloadUrl($object['id'], $name, true);
+        $this->cache->putUrl($bucket, $path, 'preview', $url, $context);
+
+        return $url;
     }
 
     /**
      * Get a download URL for the file (force download).
      *
      * @param  string  $path
+     * @param  \DateTimeInterface|int|string|null  $expiration
      * @param  string|null  $filename
      * @return string
      *
      * @throws \RuntimeException
      */
-    public function downloadUrl($path, $filename = null)
+    public function downloadUrl($path, $expiration = null, $filename = null)
     {
+        // Backward-compatibility: if 2nd param is filename string
+        if (is_string($expiration) && $filename === null && ! is_numeric($expiration) && ! strtotime($expiration)) {
+            $filename = $expiration;
+            $expiration = null;
+        }
+
+        $expiresInMinutes = $this->parseExpirationMinutes($expiration);
+        $bucket = $this->config['bucket'] ?? '';
+        $context = ['expires_in' => $expiresInMinutes, 'filename' => $filename];
+
+        if ($cached = $this->cache->getUrl($bucket, $path, 'download', $context)) {
+            return $cached;
+        }
+
         $object = $this->storeDocAdapter->getObjectByPath($path);
 
         if (! $object || ! isset($object['id'])) {
@@ -248,8 +317,40 @@ class StoreDocFilesystem extends FilesystemAdapter
 
         // Use original name if not provided
         $name = $filename ?? ($object['original_name'] ?? basename($path));
+        $url = $this->client->getDownloadUrl($object['id'], $name, false, $expiresInMinutes);
 
-        return $this->client->getDownloadUrl($object['id'], $name, false);
+        $this->cache->putUrl($bucket, $path, 'download', $url, $context);
+
+        return $url;
+    }
+
+    /**
+     * Parse expiration parameter into positive integer minutes.
+     *
+     * @param  \DateTimeInterface|int|string|null  $expiration
+     * @return int
+     */
+    protected function parseExpirationMinutes($expiration): int
+    {
+        if ($expiration === null) {
+            return (int) ($this->config['temporary_url_minutes'] ?? 10080);
+        }
+
+        if ($expiration instanceof \DateTimeInterface) {
+            $seconds = $expiration->getTimestamp() - time();
+
+            return max(1, (int) ceil($seconds / 60));
+        }
+
+        if (is_numeric($expiration)) {
+            return max(1, (int) $expiration);
+        }
+
+        if (is_string($expiration) && ($ts = strtotime($expiration)) !== false) {
+            return max(1, (int) ceil(($ts - time()) / 60));
+        }
+
+        return (int) ($this->config['temporary_url_minutes'] ?? 10080);
     }
 
     /**

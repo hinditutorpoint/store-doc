@@ -18,10 +18,13 @@ class StoreDocAdapter implements FilesystemAdapter
 
     protected array $config;
 
+    protected StoreDocCache $cache;
+
     public function __construct(array $config)
     {
         $this->config = $config;
         $this->client = $this->createClient($config);
+        $this->cache = new StoreDocCache($config);
     }
 
     protected function createClient(array $config): StoreDocClient
@@ -35,6 +38,14 @@ class StoreDocAdapter implements FilesystemAdapter
     public function getClient(): StoreDocClient
     {
         return $this->client;
+    }
+
+    /**
+     * Get the underlying StoreDoc cache manager.
+     */
+    public function getCache(): StoreDocCache
+    {
+        return $this->cache;
     }
 
     public function fileExists(string $path): bool
@@ -63,6 +74,7 @@ class StoreDocAdapter implements FilesystemAdapter
         try {
             $visibility = $config->get('visibility', 'private');
             $this->client->upload($path, $contents, ['visibility' => $visibility]);
+            $this->cache->forgetPath($this->config['bucket'] ?? '', $path);
         } catch (\Exception $e) {
             throw UnableToWriteFile::atLocation($path, 'Store-Doc write failed.', $e);
         }
@@ -77,6 +89,7 @@ class StoreDocAdapter implements FilesystemAdapter
             }
 
             $this->client->upload($path, $contents, ['visibility' => $visibility]);
+            $this->cache->forgetPath($this->config['bucket'] ?? '', $path);
         } catch (\Exception $e) {
             throw UnableToWriteFile::atLocation($path, 'Store-Doc stream write failed.', $e);
         }
@@ -124,6 +137,7 @@ class StoreDocAdapter implements FilesystemAdapter
             if ($object && isset($object['id'])) {
                 $this->client->delete($object['id']);
             }
+            $this->cache->forgetPath($this->config['bucket'] ?? '', $path);
         } catch (\Exception $e) {
             throw UnableToDeleteFile::atLocation($path, 'Store-Doc delete failed.', $e);
         }
@@ -322,6 +336,9 @@ class StoreDocAdapter implements FilesystemAdapter
         // [B-01] If delete-source fails, roll back the destination write
         try {
             $this->delete($source);
+            $bucket = $this->config['bucket'] ?? '';
+            $this->cache->forgetPath($bucket, $source);
+            $this->cache->forgetPath($bucket, $destination);
         } catch (\Exception $e) {
             try {
                 $this->delete($destination);
@@ -338,6 +355,7 @@ class StoreDocAdapter implements FilesystemAdapter
         $stream = $this->readStream($source);
         try {
             $this->writeStream($destination, $stream, $config);
+            $this->cache->forgetPath($this->config['bucket'] ?? '', $destination);
         } finally {
             if (is_resource($stream)) {
                 fclose($stream);
@@ -350,7 +368,18 @@ class StoreDocAdapter implements FilesystemAdapter
      */
     public function getObjectByPath(string $path): ?array
     {
-        return $this->client->findObjectByPath($path);
+        $bucket = $this->config['bucket'] ?? '';
+        $cached = $this->cache->getObject($bucket, $path);
+        if ($cached !== null) {
+            return $cached;
+        }
+
+        $object = $this->client->findObjectByPath($path);
+        if ($object !== null) {
+            $this->cache->putObject($bucket, $path, $object);
+        }
+
+        return $object;
     }
 
     /**

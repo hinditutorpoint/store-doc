@@ -198,8 +198,11 @@ return Storage::disk('s3-store-doc')->download('file.pdf', 'download.pdf', [
     'Cache-Control' => 'no-cache',
 ]);
 
-// Get download URL
-$downloadUrl = Storage::disk('s3-store-doc')->downloadUrl('documents/report.pdf', 'report.pdf');
+// Get download URL (uses smart cache, default 7 days)
+$downloadUrl = Storage::disk('s3-store-doc')->downloadUrl('documents/report.pdf', null, 'report.pdf');
+
+// Temporary download URL (expires in 2 hours with custom filename)
+$downloadUrl = Storage::disk('s3-store-doc')->downloadUrl('documents/report.pdf', now()->addHours(2), 'monthly-report.pdf');
 ```
 
 ### Preview Files (Inline Display)
@@ -211,8 +214,29 @@ return Storage::disk('s3-store-doc')->response('images/photo.jpg');
 // Display PDF in browser
 return Storage::disk('s3-store-doc')->response('documents/report.pdf');
 
-// Get preview URL
+// Get preview URL (inline display with smart cache, default 7 days)
 $previewUrl = Storage::disk('s3-store-doc')->previewUrl('images/photo.jpg');
+
+// Temporary preview URL (expires in 1 hour)
+$previewUrl = Storage::disk('s3-store-doc')->previewUrl('documents/report.pdf', now()->addHour());
+```
+
+### Built-in Smart Caching
+
+The package includes automatic zero-configuration caching for object metadata and signed URLs.
+- **Zero HTTP latency on hits:** Subsequent calls to `url()`, `previewUrl()`, and `downloadUrl()` resolve instantly from cache.
+- **Smart TTL:** Automatically calculates URL expiration and safely refreshes 5 minutes before the signature expires.
+- **Auto-invalidation:** Deleting, updating, moving, or writing a file immediately flushes its cached metadata and URLs.
+
+Configure caching in `config/store-doc.php`:
+```php
+'cache' => [
+    'enabled' => env('STORE_DOC_CACHE_ENABLED', true),
+    'store' => env('STORE_DOC_CACHE_STORE', null), // null uses default Laravel cache store
+    'prefix' => env('STORE_DOC_CACHE_PREFIX', 'storedoc'),
+    'object_ttl' => env('STORE_DOC_OBJECT_CACHE_TTL', 3600), // 1 hour for metadata
+    'url_safety_margin' => env('STORE_DOC_URL_SAFETY_MARGIN', 300), // 5 min safety buffer
+],
 ```
 
 ### Temporary URLs

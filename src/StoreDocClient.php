@@ -88,7 +88,7 @@ class StoreDocClient
             throw new InvalidArgumentException('HTTP timeouts must be positive and within the supported limits.');
         }
 
-        $maxTemporaryUrlMinutes = $config['max_temporary_url_minutes'] ?? 1440;
+        $maxTemporaryUrlMinutes = $config['max_temporary_url_minutes'] ?? 525600;
         if (! is_numeric($maxTemporaryUrlMinutes) || (int) $maxTemporaryUrlMinutes < 1) {
             throw new InvalidArgumentException('The maximum temporary URL lifetime must be a positive number of minutes.');
         }
@@ -226,7 +226,7 @@ class StoreDocClient
     {
         $headers = [
             'Accept' => 'application/json',
-            'User-Agent' => 'StoreDoc-Laravel-Driver/1.0.3',
+            'User-Agent' => 'StoreDoc-Laravel-Driver/1.0.5',
             'X-StoreDoc-Client' => 'package',
         ];
 
@@ -316,6 +316,20 @@ class StoreDocClient
                         if (isset($data['message'])) {
                             $safeContext['message'] = $data['message'];
                             $errorMessage = $data['message'];
+                        }
+                        if (isset($data['errors']) && is_array($data['errors'])) {
+                            $safeContext['errors'] = $data['errors'];
+                            $flatErrors = [];
+                            foreach ($data['errors'] as $fErrors) {
+                                if (is_array($fErrors)) {
+                                    $flatErrors = array_merge($flatErrors, $fErrors);
+                                } elseif (is_string($fErrors)) {
+                                    $flatErrors[] = $fErrors;
+                                }
+                            }
+                            if (!empty($flatErrors)) {
+                                $errorMessage .= ' (' . implode(', ', $flatErrors) . ')';
+                            }
                         }
                     } elseif (! empty($body)) {
                         $safeContext['body'] = substr($this->redactCredentials($body), 0, 500);
@@ -621,9 +635,10 @@ class StoreDocClient
     /**
      * Get object URL
      */
-    public function getUrl(string $objectId): string
+    public function getUrl(string $objectId, int $expiresInMinutes = 10080): string
     {
-        $data = $this->requestJson('GET', $this->objectUri($objectId, '/presigned-url'), [], 'generate download URL');
+        $uri = $this->objectUri($objectId, '/presigned-url') . '?expires_in=' . $expiresInMinutes;
+        $data = $this->requestJson('GET', $uri, [], 'generate download URL');
 
         return $this->validatePresignedUrl($data['data']['url'] ?? null);
     }
@@ -744,11 +759,14 @@ class StoreDocClient
      * @param  string  $objectId  Object UUID
      * @param  string|null  $filename  Optional filename for Content-Disposition
      * @param  bool  $inline  If true, display inline; if false, force download
+     * @param  int  $expiresInMinutes  URL lifetime in minutes (default 7 days)
      * @return string Download URL with query parameters
      */
-    public function getDownloadUrl(string $objectId, ?string $filename = null, bool $inline = false): string
+    public function getDownloadUrl(string $objectId, ?string $filename = null, bool $inline = false, int $expiresInMinutes = 10080): string
     {
-        $options = [];
+        $options = [
+            'expires_in' => $expiresInMinutes,
+        ];
 
         if ($filename) {
             $disposition = $inline ? 'inline' : 'attachment';
