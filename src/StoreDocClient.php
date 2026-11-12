@@ -615,27 +615,106 @@ class StoreDocClient
     }
 
     /**
+     * Reduce a path to the bucket relative key.
+     *
+     * The API exposes both the bucket relative "key" and the full storage
+     * "path" ("<bucket_id>/<key>"). The driver accepts both notations, so the
+     * bucket prefix is removed before two paths are compared.
+     */
+    protected function bucketRelative(string $path): string
+    {
+        $path = trim($path, '/');
+        $bucket = trim((string) $this->bucket, '/');
+
+        if ($bucket === '' || $path === '') {
+            return $path;
+        }
+
+        if ($path === $bucket) {
+            return '';
+        }
+
+        if (str_starts_with($path, $bucket.'/')) {
+            return substr($path, strlen($bucket) + 1);
+        }
+
+        return $path;
+    }
+
+    /**
+     * Collect the distinct bucket relative keys of an object.
+     *
+     * @param  array<string, mixed>  $object
+     * @return array<int, string>
+     */
+    protected function objectKeys(array $object): array
+    {
+        $keys = [];
+
+        foreach ([$object['key'] ?? null, $object['path'] ?? null] as $candidate) {
+            if (! is_string($candidate) || $candidate === '') {
+                continue;
+            }
+
+            $key = $this->bucketRelative($candidate);
+
+            if ($key !== '' && ! in_array($key, $keys, true)) {
+                $keys[] = $key;
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
      * Determine whether an object is a direct child of the requested prefix.
      *
      * [B-08] Mirrors the server side rule: an object is a direct child when
      *        its key starts with "<prefix>/" and contains no further slash.
+     *        An object whose key equals the prefix is always kept, because the
+     *        prefix may address a single file.
      */
     protected function isDirectChild(array $object, string $prefix): bool
     {
-        $key = trim((string) ($object['key'] ?? $object['path'] ?? ''), '/');
+        $keys = $this->objectKeys($object);
 
-        if ($prefix === '') {
-            return $key !== '' && ! str_contains($key, '/');
-        }
-
-        $base = rtrim($prefix, '/').'/';
-        if (! str_starts_with($key, $base)) {
+        if ($keys === []) {
             return false;
         }
 
-        $relative = substr($key, strlen($base));
+        $prefix = $this->bucketRelative($prefix);
 
-        return $relative !== '' && ! str_contains($relative, '/');
+        if ($prefix === '') {
+            foreach ($keys as $key) {
+                if (! str_contains($key, '/')) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        foreach ($keys as $key) {
+            if ($key === $prefix) {
+                return true;
+            }
+        }
+
+        $base = rtrim($prefix, '/').'/';
+
+        foreach ($keys as $key) {
+            if (! str_starts_with($key, $base)) {
+                continue;
+            }
+
+            $relative = substr($key, strlen($base));
+
+            if ($relative !== '' && ! str_contains($relative, '/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function nullableMetadata(string $uri, string $operation): ?array
@@ -682,34 +761,53 @@ class StoreDocClient
     {
         $normalized = $this->normalizePath($path);
         $bucket = rawurlencode($this->requireBucket());
-        $page = 1;
-        $lastPage = 1;
 
-        do {
-            $data = $this->requestJson('GET', "storage/buckets/{$bucket}/objects", [
-                'query' => [
-                    'prefix' => $normalized,
-                    'recursive' => '0',
-                    'per_page' => 100,
-                    'page' => $page,
-                ],
-            ], 'find object by path');
+        // A shallow lookup is the cheap path, but not every server returns an
+        // exact prefix match for "recursive=0". The recursive listing is used
+        // as a fallback so a single object is still found.
+        foreach (['0', '1'] as $recursive) {
+            $page = 1;
+            $lastPage = 1;
 
-            if (! isset($data['data']) || ! is_array($data['data'])) {
-                return null;
-            }
+            do {
+                $data = $this->requestJson('GET', "storage/buckets/{$bucket}/objects", [
+                    'query' => [
+                        'prefix' => $normalized,
+                        'recursive' => $recursive,
+                        'per_page' => 100,
+                        'page' => $page,
+                    ],
+                ], 'find object by path');
 
-            foreach ($data['data'] as $object) {
-                $objectPath = trim((string) ($object['key'] ?? $object['path'] ?? ''), '/');
-
-                if ($objectPath === $normalized && isset($object['id'])) {
-                    return $object;
+                if (! isset($data['data']) || ! is_array($data['data'])) {
+                    return null;
                 }
-            }
 
-            $lastPage = max(1, (int) ($data['meta']['last_page'] ?? 1));
-            $page++;
-        } while ($page <= $lastPage && $page <= $this->maxListingPages);
+                foreach ($data['data'] as $object) {
+                    if (! isset($object['id'])) {
+                        continue;
+                    }
+
+                    $objectPath = trim((string) ($object['path'] ?? $object['key'] ?? ''), '/');
+
+                    if ($objectPath === $normalized) {
+                        return $object;
+                    }
+
+                    // The API exposes the bucket relative key as well, so an
+                    // object is also found when the path was given in the
+                    // bucket relative notation.
+                    foreach ($this->objectKeys($object) as $key) {
+                        if ($key === $this->bucketRelative($normalized)) {
+                            return $object;
+                        }
+                    }
+                }
+
+                $lastPage = max(1, (int) ($data['meta']['last_page'] ?? 1));
+                $page++;
+            } while ($page <= $lastPage && $page <= $this->maxListingPages);
+        }
 
         return null;
     }
