@@ -440,10 +440,12 @@ class Document extends Model
 
 ## Testing
 
-The package ships with a PHPUnit suite that covers the listing logic, the
-cache invalidation rules and the client hardening.
+The source repository ships with a PHPUnit suite that covers the listing logic,
+the cache invalidation rules and the client hardening.
 
 ```bash
+git clone https://github.com/hinditutorpoint/store-doc.git
+cd store-doc
 composer install
 composer test
 ```

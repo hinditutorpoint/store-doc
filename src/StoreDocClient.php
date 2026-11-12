@@ -202,6 +202,33 @@ class StoreDocClient
     }
 
     /**
+     * Resolve the package version from the shipped composer.json.
+     *
+     * Reading the version from the manifest keeps the User-Agent header in
+     * sync with the released version without a manual code change.
+     */
+    protected function packageVersion(): string
+    {
+        static $version = null;
+
+        if ($version !== null) {
+            return $version;
+        }
+
+        $version = 'unknown';
+        $manifest = dirname(__DIR__).'/composer.json';
+
+        if (is_readable($manifest)) {
+            $decoded = json_decode((string) file_get_contents($manifest), true);
+            if (is_array($decoded) && isset($decoded['version']) && is_string($decoded['version'])) {
+                $version = $decoded['version'];
+            }
+        }
+
+        return $version;
+    }
+
+    /**
      * [S-03] Determine whether a failed request should be retried.
      */
     protected function retryDecider(): callable
@@ -265,7 +292,7 @@ class StoreDocClient
     {
         $headers = [
             'Accept' => 'application/json',
-            'User-Agent' => 'StoreDoc-Laravel-Driver/2.0.0',
+            'User-Agent' => 'StoreDoc-Laravel-Driver/'.$this->packageVersion(),
             'X-StoreDoc-Client' => 'package',
         ];
 
