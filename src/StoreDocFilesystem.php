@@ -77,7 +77,10 @@ class StoreDocFilesystem extends FilesystemAdapter
             }
         }
 
-        $lifetimeMinutes = (int) ($this->config['temporary_url_minutes'] ?? 10080); // Default 7 days
+        $lifetimeMinutes = max(1, min(
+            (int) ($this->config['temporary_url_minutes'] ?? 60),
+            (int) ($this->config['max_temporary_url_minutes'] ?? 1440)
+        ));
         $url = $this->client->getTemporaryUrl($object['id'], now()->addMinutes($lifetimeMinutes));
         $this->cache->putUrl($bucket, $path, 'public', $url);
 
@@ -327,30 +330,35 @@ class StoreDocFilesystem extends FilesystemAdapter
     /**
      * Parse expiration parameter into positive integer minutes.
      *
+     * The value is clamped to the configured maximum so a long lived URL
+     * never causes the client to reject the request.
+     *
      * @param  \DateTimeInterface|int|string|null  $expiration
      * @return int
      */
     protected function parseExpirationMinutes($expiration): int
     {
+        $max = max(1, (int) ($this->config['max_temporary_url_minutes'] ?? 1440));
+
         if ($expiration === null) {
-            return (int) ($this->config['temporary_url_minutes'] ?? 10080);
+            return max(1, min((int) ($this->config['temporary_url_minutes'] ?? 60), $max));
         }
 
         if ($expiration instanceof \DateTimeInterface) {
             $seconds = $expiration->getTimestamp() - time();
 
-            return max(1, (int) ceil($seconds / 60));
+            return max(1, min((int) ceil($seconds / 60), $max));
         }
 
         if (is_numeric($expiration)) {
-            return max(1, (int) $expiration);
+            return max(1, min((int) $expiration, $max));
         }
 
         if (is_string($expiration) && ($ts = strtotime($expiration)) !== false) {
-            return max(1, (int) ceil(($ts - time()) / 60));
+            return max(1, min((int) ceil(($ts - time()) / 60), $max));
         }
 
-        return (int) ($this->config['temporary_url_minutes'] ?? 10080);
+        return max(1, min((int) ($this->config['temporary_url_minutes'] ?? 60), $max));
     }
 
     /**

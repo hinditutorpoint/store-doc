@@ -4,6 +4,7 @@ composer.lock
 .env.backup
 .env.*.local
 .phpunit.result.cache
+.phpunit.cache/
 *.log
 .DS_Store
 Thumbs.db

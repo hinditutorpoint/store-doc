@@ -40,8 +40,12 @@ STORE_DOC_API_URL=https://your-domain.com/api
 STORE_DOC_ACCESS_KEY_ID=your_access_key_id
 STORE_DOC_SECRET_KEY=your_secret_access_key
 STORE_DOC_BUCKET=your_bucket_id
+STORE_DOC_AUTH_MODE=hmac
 # Local HTTP development only. Keep false in production.
 STORE_DOC_ALLOW_INSECURE_HTTP=false
+STORE_DOC_VERIFY_SSL=true
+STORE_DOC_TEMPORARY_URL_MINUTES=60
+STORE_DOC_MAX_TEMPORARY_URL_MINUTES=1440
 ```
 
 ### 4. Add Disk Configuration
@@ -63,6 +67,8 @@ In `config/filesystems.php`, add a new disk:
         'verify_ssl' => env('STORE_DOC_VERIFY_SSL', true),
         'allow_insecure_http' => env('STORE_DOC_ALLOW_INSECURE_HTTP', false),
         'allow_insecure_tls' => env('STORE_DOC_ALLOW_INSECURE_TLS', false),
+        'auth_mode' => env('STORE_DOC_AUTH_MODE', 'hmac'),
+        'temporary_url_minutes' => env('STORE_DOC_TEMPORARY_URL_MINUTES', 60),
         'max_temporary_url_minutes' => env('STORE_DOC_MAX_TEMPORARY_URL_MINUTES', 1440),
         'max_listing_pages' => env('STORE_DOC_MAX_LISTING_PAGES', 1000),
     ],
@@ -75,8 +81,16 @@ both to the Store-Doc API root. HTTPS and certificate verification are required 
 default. For local HTTP development only, explicitly enable
 `allow_insecure_http`; never disable TLS verification in production.
 
+HMAC-SHA256 authentication signs each request URI (including its query string)
+with a timestamp and unique nonce. Nonces are single-use, so retries are signed
+again. Deploy this driver together with a backend that supports the nonce-based
+signature format; older HMAC clients must be upgraded. The legacy `basic` mode
+sends the secret in a request header and should only be used for compatibility
+over verified HTTPS.
+
 Temporary URL lifetimes are passed to Store-Doc in minutes and are limited to
-`max_temporary_url_minutes` (1440 by default). Keep URLs short-lived and do not log
+`max_temporary_url_minutes` (1440 by default); generated URLs default to 60
+minutes. Keep URLs short-lived and do not log
 or persist their signed query strings.
 Object, bucket, and folder listings follow pagination and stop at
 `max_listing_pages` (1000 by default) to bound unexpected response sizes.
@@ -198,7 +212,7 @@ return Storage::disk('s3-store-doc')->download('file.pdf', 'download.pdf', [
     'Cache-Control' => 'no-cache',
 ]);
 
-// Get download URL (uses smart cache, default 7 days)
+// Get download URL (uses smart cache, default 60 minutes)
 $downloadUrl = Storage::disk('s3-store-doc')->downloadUrl('documents/report.pdf', null, 'report.pdf');
 
 // Temporary download URL (expires in 2 hours with custom filename)
@@ -214,7 +228,7 @@ return Storage::disk('s3-store-doc')->response('images/photo.jpg');
 // Display PDF in browser
 return Storage::disk('s3-store-doc')->response('documents/report.pdf');
 
-// Get preview URL (inline display with smart cache, default 7 days)
+// Get preview URL (inline display with smart cache, default 60 minutes)
 $previewUrl = Storage::disk('s3-store-doc')->previewUrl('images/photo.jpg');
 
 // Temporary preview URL (expires in 1 hour)
@@ -236,6 +250,7 @@ Configure caching in `config/store-doc.php`:
     'prefix' => env('STORE_DOC_CACHE_PREFIX', 'storedoc'),
     'object_ttl' => env('STORE_DOC_OBJECT_CACHE_TTL', 3600), // 1 hour for metadata
     'url_safety_margin' => env('STORE_DOC_URL_SAFETY_MARGIN', 300), // 5 min safety buffer
+    'url_default_ttl' => env('STORE_DOC_URL_CACHE_TTL', 3600), // used when the URL expiry cannot be read
 ],
 ```
 
@@ -422,6 +437,19 @@ class Document extends Model
 - PHP 8.3 or higher
 - Laravel 11.x, 12.x, or 13.x
 - Store-Doc account with API access
+
+## Testing
+
+The package ships with a PHPUnit suite that covers the listing logic, the
+cache invalidation rules and the client hardening.
+
+```bash
+composer install
+composer test
+```
+
+The suite is excluded from the Composer dist archive, so it never reaches
+production installations.
 
 ## Troubleshooting
 

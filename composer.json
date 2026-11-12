@@ -1,7 +1,7 @@
 {
     "name": "store-doc/laravel-storage-driver",
     "description": "Laravel Storage Driver for Store-Doc S3-compatible storage service with complete Storage facade support",
-    "version": "1.0.5",
+    "version": "2.0.0",
     "type": "library",
     "license": "MIT",
     "keywords": [
@@ -29,6 +29,17 @@
         "psr-4": {
             "StoreDoc\\Laravel\\Storage\\": "src/"
         }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "StoreDoc\\Laravel\\Storage\\Tests\\": "tests/"
+        }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0|^12.0"
+    },
+    "scripts": {
+        "test": "phpunit"
     },
     "extra": {
         "laravel": {

@@ -35,7 +35,7 @@ return [
     |
     */
 
-    'auth_mode' => env('STORE_DOC_AUTH_MODE', 'basic'),
+    'auth_mode' => env('STORE_DOC_AUTH_MODE', 'hmac'),
 
     /*
     |--------------------------------------------------------------------------
@@ -67,9 +67,9 @@ return [
 
     'max_retries' => env('STORE_DOC_MAX_RETRIES', 3),
 
-    'temporary_url_minutes' => env('STORE_DOC_TEMPORARY_URL_MINUTES', 10080), // 7 days default
+    'temporary_url_minutes' => env('STORE_DOC_TEMPORARY_URL_MINUTES', 60),
 
-    'max_temporary_url_minutes' => env('STORE_DOC_MAX_TEMPORARY_URL_MINUTES', 525600), // 1 year max
+    'max_temporary_url_minutes' => env('STORE_DOC_MAX_TEMPORARY_URL_MINUTES', 1440),
 
     'max_listing_pages' => env('STORE_DOC_MAX_LISTING_PAGES', 1000),
 
@@ -88,6 +88,7 @@ return [
         'prefix' => env('STORE_DOC_CACHE_PREFIX', 'storedoc'),
         'object_ttl' => env('STORE_DOC_OBJECT_CACHE_TTL', 3600), // 1 hour for metadata
         'url_safety_margin' => env('STORE_DOC_URL_SAFETY_MARGIN', 300), // 5 minutes before signature expires
+        'url_default_ttl' => env('STORE_DOC_URL_CACHE_TTL', 3600), // fallback TTL when the expiry cannot be read
     ],
 
 ];

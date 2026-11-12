@@ -176,11 +176,19 @@ class StoreDocAdapter implements FilesystemAdapter
                     break;
                 }
 
+                $deleted = 0;
                 foreach ($data as $object) {
                     $objectPath = trim((string) ($object['key'] ?? $object['path'] ?? ''), '/');
                     if ($objectPath !== '' && str_starts_with($objectPath, $prefix) && isset($object['id'])) {
                         $this->client->delete($object['id']);
+                        $deleted++;
                     }
+                }
+
+                // Nothing could be deleted, so the listing would never change.
+                // Stop instead of looping until the upper bound is reached.
+                if ($deleted === 0) {
+                    break;
                 }
 
                 $safety++;
@@ -264,11 +272,27 @@ class StoreDocAdapter implements FilesystemAdapter
         );
     }
 
+    /**
+     * List the contents of a directory.
+     *
+     * [B-08] The Store-Doc API only exposes a flat object listing, so
+     *        directories are derived from the object paths. A shallow listing
+     *        therefore only returns the direct children (files) and the
+     *        immediate sub-directories, while a deep listing returns every
+     *        file together with all of its parent directories.
+     *
+     *        The previous implementation treated the last segment of an object
+     *        path as a directory, so nested files were reported as folders
+     *        and never returned as files.
+     */
     public function listContents(string $path, bool $deep): iterable
     {
         $directory = trim($path, '/');
         $prefix = $directory === '' ? '' : $directory.'/';
-        $objects = $this->client->listObjects($prefix, $deep);
+
+        // Always request the whole subtree: the API has no dedicated directory
+        // listing, so the directory tree has to be derived locally.
+        $objects = $this->client->listObjects($prefix, true);
         $seenDirectories = [];
 
         foreach ($objects as $object) {
@@ -287,29 +311,75 @@ class StoreDocAdapter implements FilesystemAdapter
                 continue;
             }
 
+            $timestamp = isset($object['updated_at']) ? strtotime((string) $object['updated_at']) : null;
+            $timestamp = $timestamp === false ? null : $timestamp;
+
+            $isFolder = ($object['type'] ?? null) === 'folder';
+
             $segments = explode('/', $relativePath);
-            $directoryDepth = count($segments) - 1;
-            if ($directoryDepth > 0 || ($object['type'] ?? null) === 'folder') {
-                $directoryDepth = $deep ? max($directoryDepth, count($segments)) : 1;
-                for ($depth = 1; $depth <= $directoryDepth; $depth++) {
-                    $directoryPath = implode('/', array_slice($segments, 0, $depth));
-                    $directoryPath = $directory === '' ? $directoryPath : $directory.'/'.$directoryPath;
-                    if (! isset($seenDirectories[$directoryPath])) {
-                        $seenDirectories[$directoryPath] = true;
-                        $timestamp = isset($object['updated_at']) ? strtotime($object['updated_at']) : null;
-                        yield new DirectoryAttributes($directoryPath, null, $timestamp === false ? null : $timestamp);
+            $entryName = array_pop($segments);
+            $ancestorDepth = count($segments);
+
+            if (! $deep) {
+                // Shallow listing: direct files only, plus the immediate
+                // sub-directories derived from deeper objects.
+                if ($ancestorDepth === 0) {
+                    if ($isFolder) {
+                        $folderPath = $directory === '' ? $entryName : $directory.'/'.$entryName;
+                        if (! isset($seenDirectories[$folderPath])) {
+                            $seenDirectories[$folderPath] = true;
+                            yield new DirectoryAttributes($folderPath, null, $timestamp);
+                        }
+
+                        continue;
                     }
+
+                    yield new FileAttributes(
+                        $directory === '' ? $relativePath : $directory.'/'.$relativePath,
+                        $object['size'] ?? null,
+                        $object['visibility'] ?? 'private',
+                        $timestamp,
+                        $object['mime_type'] ?? null
+                    );
+
+                    continue;
+                }
+
+                $immediate = $segments[0];
+                $folderPath = $directory === '' ? $immediate : $directory.'/'.$immediate;
+                if (! isset($seenDirectories[$folderPath])) {
+                    $seenDirectories[$folderPath] = true;
+                    yield new DirectoryAttributes($folderPath, null, $timestamp);
                 }
 
                 continue;
             }
 
-            $timestamp = isset($object['updated_at']) ? strtotime($object['updated_at']) : null;
+            // Deep listing: yield every parent directory of the entry.
+            for ($depth = 1; $depth <= $ancestorDepth; $depth++) {
+                $directoryPath = implode('/', array_slice($segments, 0, $depth));
+                $directoryPath = $directory === '' ? $directoryPath : $directory.'/'.$directoryPath;
+                if (! isset($seenDirectories[$directoryPath])) {
+                    $seenDirectories[$directoryPath] = true;
+                    yield new DirectoryAttributes($directoryPath, null, $timestamp);
+                }
+            }
+
+            if ($isFolder) {
+                $folderPath = $directory === '' ? $relativePath : $directory.'/'.$relativePath;
+                if (! isset($seenDirectories[$folderPath])) {
+                    $seenDirectories[$folderPath] = true;
+                    yield new DirectoryAttributes($folderPath, null, $timestamp);
+                }
+
+                continue;
+            }
+
             yield new FileAttributes(
                 $directory === '' ? $relativePath : $directory.'/'.$relativePath,
                 $object['size'] ?? null,
                 $object['visibility'] ?? 'private',
-                $timestamp === false ? null : $timestamp,
+                $timestamp,
                 $object['mime_type'] ?? null
             );
         }

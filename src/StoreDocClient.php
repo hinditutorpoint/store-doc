@@ -88,7 +88,7 @@ class StoreDocClient
             throw new InvalidArgumentException('HTTP timeouts must be positive and within the supported limits.');
         }
 
-        $maxTemporaryUrlMinutes = $config['max_temporary_url_minutes'] ?? 525600;
+        $maxTemporaryUrlMinutes = $config['max_temporary_url_minutes'] ?? 1440;
         if (! is_numeric($maxTemporaryUrlMinutes) || (int) $maxTemporaryUrlMinutes < 1) {
             throw new InvalidArgumentException('The maximum temporary URL lifetime must be a positive number of minutes.');
         }
@@ -98,7 +98,7 @@ class StoreDocClient
         }
 
         // [S-01] Auth mode: 'hmac' (recommended) or 'basic' (legacy, secret in header)
-        $authMode = $config['auth_mode'] ?? 'basic';
+        $authMode = $config['auth_mode'] ?? 'hmac';
         if (! in_array($authMode, ['hmac', 'basic'], true)) {
             throw new InvalidArgumentException('The auth_mode must be "hmac" or "basic".');
         }
@@ -158,7 +158,10 @@ class StoreDocClient
      */
     protected function createHttpClient(array $options): Client
     {
-        $stack = HandlerStack::create();
+        $stack = $options['handler'] ?? HandlerStack::create();
+        if (! $stack instanceof HandlerStack) {
+            throw new InvalidArgumentException('The Store-Doc HTTP handler must be a Guzzle handler stack.');
+        }
 
         if ($this->maxRetries > 0) {
             $stack->push(Middleware::retry(
@@ -167,9 +170,35 @@ class StoreDocClient
             ), 'retry');
         }
 
+        if ($this->authMode === 'hmac') {
+            $stack->push(
+                Middleware::mapRequest(fn (RequestInterface $request): RequestInterface => $this->signRequest($request)),
+                'hmac-signature'
+            );
+        }
+
         $options['handler'] = $stack;
 
         return new Client($options);
+    }
+
+    protected function signRequest(RequestInterface $request): RequestInterface
+    {
+        $timestamp = (string) time();
+        $nonce = bin2hex(random_bytes(16));
+        $path = preg_replace('#^/api(?=/|$)#', '', $request->getUri()->getPath()) ?? $request->getUri()->getPath();
+        $uri = ltrim($path, '/');
+        $query = $request->getUri()->getQuery();
+        if ($query !== '') {
+            $uri .= '?'.$query;
+        }
+
+        $signature = $this->generateHmacSignature($request->getMethod(), $uri, $timestamp, $nonce);
+
+        return $request->withHeader(
+            'Authorization',
+            "HMAC-SHA256 Credential={$this->accessKeyId}, Timestamp={$timestamp}, Nonce={$nonce}, Signature={$signature}"
+        );
     }
 
     /**
@@ -187,9 +216,19 @@ class StoreDocClient
                 return true;
             }
 
-            // Retry on rate-limit and server errors
             if ($response) {
-                return in_array($response->getStatusCode(), [429, 502, 503, 504], true);
+                $status = $response->getStatusCode();
+
+                // Rate limits are safe to retry for every method.
+                if ($status === 429) {
+                    return true;
+                }
+
+                // A gateway error may mean the request was already processed by
+                // the server, so it is only repeated for idempotent methods.
+                $idempotent = in_array(strtoupper($request->getMethod()), ['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE'], true);
+
+                return $idempotent && in_array($status, [502, 503, 504], true);
             }
 
             return false;
@@ -222,25 +261,17 @@ class StoreDocClient
      * [S-01] HMAC mode: the secret key never leaves the client.
      *        Basic mode (legacy): the secret is sent in the header — avoid in production.
      */
-    protected function getAuthHeaders(string $method = '', string $uri = ''): array
+    protected function getAuthHeaders(): array
     {
         $headers = [
             'Accept' => 'application/json',
-            'User-Agent' => 'StoreDoc-Laravel-Driver/1.0.5',
+            'User-Agent' => 'StoreDoc-Laravel-Driver/2.0.0',
             'X-StoreDoc-Client' => 'package',
         ];
 
-        if ($this->authMode === 'hmac') {
-            $timestamp = (string) time();
-            $signature = $this->generateHmacSignature($method, $uri, $timestamp);
-
-            $headers['Authorization'] = "HMAC-SHA256 Credential={$this->accessKeyId}, Timestamp={$timestamp}, Signature={$signature}";
-
-            return $headers;
+        if ($this->authMode === 'basic') {
+            $headers['X-Api-Key'] = "{$this->accessKeyId}:{$this->secretAccessKey}";
         }
-
-        // Legacy basic mode
-        $headers['X-Api-Key'] = "{$this->accessKeyId}:{$this->secretAccessKey}";
 
         return $headers;
     }
@@ -248,12 +279,12 @@ class StoreDocClient
     /**
      * [S-01] Generate an HMAC-SHA256 signature for the request.
      *
-     * The canonical string is: METHOD\nURI\nTIMESTAMP
+     * The canonical string is: METHOD\nURI\nTIMESTAMP\nNONCE
      * The secret key is used as the HMAC key and never transmitted.
      */
-    protected function generateHmacSignature(string $method, string $uri, string $timestamp): string
+    protected function generateHmacSignature(string $method, string $uri, string $timestamp, string $nonce): string
     {
-        $canonical = implode("\n", [strtoupper($method), $uri, $timestamp]);
+        $canonical = implode("\n", [strtoupper($method), $uri, $timestamp, $nonce]);
 
         return hash_hmac('sha256', $canonical, $this->secretAccessKey);
     }
@@ -291,7 +322,7 @@ class StoreDocClient
     {
         // Inject auth headers automatically
         $options['headers'] = array_merge(
-            $this->getAuthHeaders($method, $uri),
+            $this->getAuthHeaders(),
             $options['headers'] ?? []
         );
 
@@ -502,6 +533,10 @@ class StoreDocClient
      * List objects in bucket.
      *
      * [M-01] Uses array_push spread instead of array_merge to avoid O(n²) copies.
+     *
+     * [B-08] The API is asked for a non-recursive listing, but the depth is
+     *        verified locally as well because the server may ignore the
+     *        "recursive" flag.
      */
     public function listObjects(string $prefix = '', bool $recursive = false): array
     {
@@ -534,10 +569,14 @@ class StoreDocClient
                     ! is_string($object['key'] ?? $object['path'] ?? null)) {
                     throw new RuntimeException('Store-Doc returned invalid object metadata in a listing.');
                 }
+
+                if (! $recursive && ! $this->isDirectChild($object, $prefix)) {
+                    continue;
+                }
+
+                $items[] = $object;
             }
 
-            // [M-01] Spread push avoids creating a full copy of $items on each iteration
-            array_push($items, ...$data['data']);
             $lastPage = max(1, (int) ($data['meta']['last_page'] ?? 1));
             if ($lastPage < $page || $lastPage > $this->maxListingPages) {
                 throw new RuntimeException('Store-Doc returned invalid object listing pagination.');
@@ -546,6 +585,30 @@ class StoreDocClient
         } while ($page <= $lastPage);
 
         return $items;
+    }
+
+    /**
+     * Determine whether an object is a direct child of the requested prefix.
+     *
+     * [B-08] Mirrors the server side rule: an object is a direct child when
+     *        its key starts with "<prefix>/" and contains no further slash.
+     */
+    protected function isDirectChild(array $object, string $prefix): bool
+    {
+        $key = trim((string) ($object['key'] ?? $object['path'] ?? ''), '/');
+
+        if ($prefix === '') {
+            return $key !== '' && ! str_contains($key, '/');
+        }
+
+        $base = rtrim($prefix, '/').'/';
+        if (! str_starts_with($key, $base)) {
+            return false;
+        }
+
+        $relative = substr($key, strlen($base));
+
+        return $relative !== '' && ! str_contains($relative, '/');
     }
 
     protected function nullableMetadata(string $uri, string $operation): ?array
@@ -635,8 +698,9 @@ class StoreDocClient
     /**
      * Get object URL
      */
-    public function getUrl(string $objectId, int $expiresInMinutes = 10080): string
+    public function getUrl(string $objectId, int $expiresInMinutes = 60): string
     {
+        $this->validateTemporaryUrlLifetime($expiresInMinutes);
         $uri = $this->objectUri($objectId, '/presigned-url') . '?expires_in=' . $expiresInMinutes;
         $data = $this->requestJson('GET', $uri, [], 'generate download URL');
 
@@ -658,9 +722,7 @@ class StoreDocClient
             throw new InvalidArgumentException('Temporary URL expiration must be in the future.');
         }
         $expiresInMinutes = (int) ceil($expiresInSeconds / 60);
-        if ($expiresInMinutes > $this->maxTemporaryUrlMinutes) {
-            throw new InvalidArgumentException('The requested temporary URL lifetime exceeds the configured maximum.');
-        }
+        $this->validateTemporaryUrlLifetime($expiresInMinutes);
 
         $allowedOptions = [
             'response-content-disposition' => 'response-content-disposition',
@@ -759,11 +821,12 @@ class StoreDocClient
      * @param  string  $objectId  Object UUID
      * @param  string|null  $filename  Optional filename for Content-Disposition
      * @param  bool  $inline  If true, display inline; if false, force download
-     * @param  int  $expiresInMinutes  URL lifetime in minutes (default 7 days)
+     * @param  int  $expiresInMinutes  URL lifetime in minutes (default 60 minutes)
      * @return string Download URL with query parameters
      */
-    public function getDownloadUrl(string $objectId, ?string $filename = null, bool $inline = false, int $expiresInMinutes = 10080): string
+    public function getDownloadUrl(string $objectId, ?string $filename = null, bool $inline = false, int $expiresInMinutes = 60): string
     {
+        $this->validateTemporaryUrlLifetime($expiresInMinutes);
         $options = [
             'expires_in' => $expiresInMinutes,
         ];
@@ -782,6 +845,17 @@ class StoreDocClient
         ], 'generate download URL');
 
         return $this->validatePresignedUrl($data['data']['url'] ?? null);
+    }
+
+    protected function validateTemporaryUrlLifetime(int $expiresInMinutes): void
+    {
+        if ($expiresInMinutes < 1) {
+            throw new InvalidArgumentException('Temporary URL lifetime must be at least one minute.');
+        }
+
+        if ($expiresInMinutes > $this->maxTemporaryUrlMinutes) {
+            throw new InvalidArgumentException('The requested temporary URL lifetime exceeds the configured maximum.');
+        }
     }
 
     /**
